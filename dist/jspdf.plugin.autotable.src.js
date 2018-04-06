@@ -1042,14 +1042,15 @@ function calculateWidths(doc, pageWidth) {
             var cell = row.cells[col.dataKey];
             config_1.Config.applyStyles(cell.styles);
             var textSpace = col.width - cell.padding('horizontal');
+            var k = config_1.Config.scaleFactor();
             if (cell.styles.overflow === 'linebreak') {
                 // Add one pt to textSpace to fix rounding error
                 try {
-                    cell.text = doc.splitTextToSize(cell.text, textSpace + 1, { fontSize: cell.styles.fontSize });
+                    cell.text = doc.splitTextToSize(cell.text, textSpace + 1 / k, { fontSize: cell.styles.fontSize });
                 }
                 catch (e) {
                     if (e instanceof TypeError && Array.isArray(cell.text)) {
-                        cell.text = doc.splitTextToSize(cell.text.join(' '), textSpace + 1, { fontSize: cell.styles.fontSize });
+                        cell.text = doc.splitTextToSize(cell.text.join(' '), textSpace + 1 / k, { fontSize: cell.styles.fontSize });
                     }
                     else {
                         throw e;
@@ -1071,7 +1072,6 @@ function calculateWidths(doc, pageWidth) {
             else {
                 console.error("Unrecognized overflow type: " + cell.styles.overflow);
             }
-            var k = config_1.Config.scaleFactor();
             var lineCount = Array.isArray(cell.text) ? cell.text.length : 1;
             var fontHeight = cell.styles.fontSize / k * config_1.FONT_ROW_RATIO;
             cell.contentHeight = lineCount * fontHeight + cell.padding('vertical');
@@ -1103,6 +1103,26 @@ function distributeWidth(dynamicColumns, staticWidth, dynamicColumnsContentWidth
         else {
             col.width = col.contentWidth + extraWidth * ratio;
         }
+    }
+    // Scalable minWidth support
+    if (dynamicColumns.length > 1) {
+        var minWidthDefault = 70;
+        var minWidthTotal = dynamicColumns.reduce(function (total, col) { return total + (col.minWidth || minWidthDefault); }, 0);
+        var roomTotal = table.width - staticWidth;
+        var room = 0;
+        dynamicColumns.slice()
+            .sort(function (a, b) { return a.width < b.width ? -1 : a.width > b.width ? 1 : 0; })
+            .forEach(function (col) {
+            var minWidth = col.minWidth || minWidthDefault;
+            if (minWidthTotal > roomTotal)
+                minWidth *= roomTotal / minWidthTotal;
+            col.width -= room;
+            room = 0;
+            if (col.width < minWidth) {
+                room += minWidth - col.width;
+                col.width = minWidth;
+            }
+        });
     }
 }
 
@@ -1273,6 +1293,7 @@ var toPrimitive = __webpack_require__(26);
 
 var toStr = Object.prototype.toString;
 var hasSymbols = typeof Symbol === 'function' && typeof Symbol.iterator === 'symbol';
+var SymbolIterator = hasSymbols ? Symbol.iterator : null;
 
 var $isNaN = __webpack_require__(9);
 var $isFinite = __webpack_require__(8);
@@ -1694,6 +1715,95 @@ var ES6 = assign(assign({}, ES5), {
 		var argumentsList = arraySlice(arguments, 2);
 		var func = this.GetV(O, P);
 		return this.Call(func, O, argumentsList);
+	},
+
+	// http://ecma-international.org/ecma-262/6.0/#sec-getiterator
+	GetIterator: function GetIterator(obj, method) {
+		if (!hasSymbols) {
+			throw new SyntaxError('ES.GetIterator depends on native iterator support.');
+		}
+
+		var actualMethod = method;
+		if (arguments.length < 2) {
+			actualMethod = this.GetMethod(obj, SymbolIterator);
+		}
+		var iterator = this.Call(actualMethod, obj);
+		if (this.Type(iterator) !== 'Object') {
+			throw new TypeError('iterator must return an object');
+		}
+
+		return iterator;
+	},
+
+	// http://ecma-international.org/ecma-262/6.0/#sec-iteratornext
+	IteratorNext: function IteratorNext(iterator, value) {
+		var result = this.Invoke(iterator, 'next', arguments.length < 2 ? [] : [value]);
+		if (this.Type(result) !== 'Object') {
+			throw new TypeError('iterator next must return an object');
+		}
+		return result;
+	},
+
+	// http://ecma-international.org/ecma-262/6.0/#sec-iteratorcomplete
+	IteratorComplete: function IteratorComplete(iterResult) {
+		if (this.Type(iterResult) !== 'Object') {
+			throw new TypeError('Assertion failed: Type(iterResult) is not Object');
+		}
+		return this.ToBoolean(this.Get(iterResult, 'done'));
+	},
+
+	// http://ecma-international.org/ecma-262/6.0/#sec-iteratorvalue
+	IteratorValue: function IteratorValue(iterResult) {
+		if (this.Type(iterResult) !== 'Object') {
+			throw new TypeError('Assertion failed: Type(iterResult) is not Object');
+		}
+		return this.Get(iterResult, 'value');
+	},
+
+	// http://ecma-international.org/ecma-262/6.0/#sec-iteratorstep
+	IteratorStep: function IteratorStep(iterator) {
+		var result = this.IteratorNext(iterator);
+		var done = this.IteratorComplete(result);
+		return done === true ? false : result;
+	},
+
+	// http://ecma-international.org/ecma-262/6.0/#sec-iteratorclose
+	IteratorClose: function IteratorClose(iterator, completion) {
+		if (this.Type(iterator) !== 'Object') {
+			throw new TypeError('Assertion failed: Type(iterator) is not Object');
+		}
+		if (!this.IsCallable(completion)) {
+			throw new TypeError('Assertion failed: completion is not a thunk for a Completion Record');
+		}
+		var completionThunk = completion;
+
+		var iteratorReturn = this.GetMethod(iterator, 'return');
+
+		if (typeof iteratorReturn === 'undefined') {
+			return completionThunk();
+		}
+
+		var completionRecord;
+		try {
+			var innerResult = this.Call(iteratorReturn, iterator, []);
+		} catch (e) {
+			// if we hit here, then "e" is the innerResult completion that needs re-throwing
+
+			// if the completion is of type "throw", this will throw.
+			completionRecord = completionThunk();
+			completionThunk = null; // ensure it's not called twice.
+
+			// if not, then return the innerResult completion
+			throw e;
+		}
+		completionRecord = completionThunk(); // if innerResult worked, then throw if the completion does
+		completionThunk = null; // ensure it's not called twice.
+
+		if (this.Type(innerResult) !== 'Object') {
+			throw new TypeError('iterator .return must return an object');
+		}
+
+		return completionRecord;
 	},
 
 	// http://ecma-international.org/ecma-262/6.0/#sec-createiterresultobject
