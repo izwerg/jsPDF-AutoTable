@@ -112,4 +112,26 @@ function distributeWidth(dynamicColumns, staticWidth, dynamicColumnsContentWidth
             col.width = col.contentWidth + extraWidth * ratio;
         }
     }
+
+    // Scalable minWidth support
+    if(dynamicColumns.length > 1) {
+        var minWidthDefault = 70;
+        var minWidthTotal = dynamicColumns.reduce((total, col) => total + (col.minWidth || minWidthDefault), 0);
+        var roomTotal = table.width - staticWidth;
+        var room = 0;
+
+        dynamicColumns.slice()
+            .sort((a, b) => a.width < b.width ? -1 : a.width > b.width ? 1 : 0)
+                .forEach(col => {
+                    var minWidth = col.minWidth || minWidthDefault;
+                    if (minWidthTotal > roomTotal) minWidth *= roomTotal / minWidthTotal;
+                    col.width -= room;
+                    room = 0;
+                    if (col.width < minWidth) {
+                        room += minWidth - col.width;
+                        col.width = minWidth;
+                    }
+                });
+    }
+
 }
